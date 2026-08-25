@@ -205,7 +205,7 @@ class HiLoGameEngine:
     def calculate_payout(
         bet_amount: float,
         result: str,
-        payout_multiplier: float = 2.0,
+        payout_multiplier: float,
     ) -> float:
         """
         Calculate the payout for a round.

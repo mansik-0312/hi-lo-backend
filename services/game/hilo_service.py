@@ -31,18 +31,31 @@ from config.models.hilo_round_model import (
 )
 from services.game.hilo_engine import HiLoGameEngine
 
+from config.game.hilo_config import (
+    HILO_GAME_CONFIG,
+    HiLoGameConfig,
+)
 
 class HiLoGameService:
     """
     Business service for Hi-Lo gameplay.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        config: HiLoGameConfig = HILO_GAME_CONFIG,
+    ) -> None:
         """
         Initialize the Hi-Lo service.
+
+        Args:
+            config:
+                Game configuration containing betting
+                and payout rules.
         """
 
         self.engine = HiLoGameEngine()
+        self.config = config
 
     # =========================================================
     # START GAME
@@ -198,9 +211,16 @@ class HiLoGameService:
         # 4. Validate bet
         # -----------------------------------------------------
 
-        if bet_amount <= 0:
+        if bet_amount < self.config.min_bet:
             raise ValueError(
-                "Bet amount must be greater than zero."
+                f"Bet amount must be at least "
+                f"{self.config.min_bet}."
+            )
+
+        if bet_amount > self.config.max_bet:
+            raise ValueError(
+                f"Bet amount cannot exceed "
+                f"{self.config.max_bet}."
             )
 
         balance = Decimal(
@@ -262,6 +282,9 @@ class HiLoGameService:
                 self.engine.calculate_payout(
                     float(bet_amount),
                     result,
+                    float(
+                        self.config.win_payout_multiplier
+                    ),
                 )
             )
         )
