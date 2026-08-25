@@ -33,6 +33,8 @@ from config.basic_config import *
 
 from services.translation import translate_message
 
+from api.routes.game.hilo_route import router as hilo_router
+
 init_firebase()
 leaderboard_task = None
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -203,6 +205,7 @@ app.include_router(adminauth_route.router)
 app.include_router(google_auth_api.router, prefix="/api/google-auth", tags=["Auth"])
 app.include_router(apple_auth_api.router, prefix="/api/apple-auth", tags=["Auth"])
 app.include_router(fcm_route.router, prefix="/api/fcm")
+app.include_router(hilo_router)
 
 # Scheduler Instance
 scheduler = BackgroundScheduler()

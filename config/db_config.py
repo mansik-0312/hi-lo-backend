@@ -78,18 +78,57 @@ admin_collection = db["Admin"]
 notification_collection = db["notifications"]
 fcm_device_tokens_collection = db["fcm_device_tokens"]
 
+# Hi-Lo game collections
+hilo_game_collection = db["hilo_games"]
+hilo_round_collection = db["hilo_rounds"]
+
 async def create_indexes():
     """
-    Placeholder for database indexes.
-    Currently no indexes are created.
+    Create database indexes required by the application.
+
+    Returns:
+        True when indexes are created successfully,
+        otherwise False.
     """
     try:
-        # No indexes to create at the moment
-        return True
-    except Exception as e:
-        logger.error(f"------------Error creating indexes: {e}")
-        return False
+        # User-specific game lookup.
+        await hilo_game_collection.create_index(
+            [
+                ("player_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ]
+        )
 
+        # Game status lookup for active game queries.
+        await hilo_game_collection.create_index(
+            [
+                ("status", ASCENDING),
+            ]
+        )
+
+        # Round lookup by game.
+        await hilo_round_collection.create_index(
+            [
+                ("game_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ]
+        )
+
+        # Round lookup by player.
+        await hilo_round_collection.create_index(
+            [
+                ("player_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ]
+        )
+
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Error creating database indexes: {e}"
+        )
+        return False
         
 async def initialize_database():
     """Initialize database connection and test connectivity"""
