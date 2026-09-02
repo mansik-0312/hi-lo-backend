@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta, timezone
-from config.db_config import create_indexes, user_collection
+from config.db_config import create_indexes
 import requests
 import json
 import logging
@@ -34,6 +34,22 @@ from config.basic_config import *
 from services.translation import translate_message
 
 from api.routes.game.hilo_route import router as hilo_router
+
+from api.routes.operator.operator_route import (
+    router as operator_router,
+)
+
+from api.routes.adapter.adapter_route import (
+    router as adapter_router,
+)
+
+from api.routes.wallet_test.wallet_test_route import (
+    router as wallet_router
+)
+
+from api.routes.wallet.wallet_route import (
+    router as wallet_router,
+)
 
 init_firebase()
 leaderboard_task = None
@@ -206,6 +222,10 @@ app.include_router(google_auth_api.router, prefix="/api/google-auth", tags=["Aut
 app.include_router(apple_auth_api.router, prefix="/api/apple-auth", tags=["Auth"])
 app.include_router(fcm_route.router, prefix="/api/fcm")
 app.include_router(hilo_router)
+app.include_router(operator_router)
+app.include_router(adapter_router)
+app.include_router(wallet_router)
+app.include_router(wallet_router)
 
 # Scheduler Instance
 scheduler = BackgroundScheduler()

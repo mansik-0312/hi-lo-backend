@@ -55,17 +55,19 @@ async def start_game(
     """
 
     try:
+
         return await controller.start_game(
+            operator_id=player.operator_id,
             player_id=player.player_id,
-            initial_balance=request.initial_balance,
+            currency=request.currency,
         )
 
     except ValueError as exc:
+
         raise HTTPException(
             status_code=400,
             detail=str(exc),
         )
-
 
 # =========================================================
 # PLAYER GAME HISTORY
@@ -208,6 +210,7 @@ async def get_game_rounds(
         game = await controller.get_game(
             game_id=game_id,
             player_id=player.player_id,
+            operator_id=player.operator_id
         )
 
         if not game:
@@ -255,6 +258,7 @@ async def get_game_round(
         game = await controller.get_game(
             game_id=game_id,
             player_id=player.player_id,
+            operator_id=player.operator_id,
         )
 
         if not game:
@@ -306,6 +310,7 @@ async def get_game(
         return await controller.get_game(
             game_id=game_id,
             player_id=player.player_id,
+            operator_id=player.operator_id,
         )
 
     except ValueError as exc:
@@ -337,6 +342,7 @@ async def play_round(
         return await controller.play_round(
             game_id=game_id,
             player_id=player.player_id,
+            operator_id=player.operator_id,
             bet_amount=request.bet_amount,
             prediction=request.prediction,
         )
@@ -346,3 +352,18 @@ async def play_round(
             status_code=400,
             detail=str(exc),
         )
+
+@router.post(
+    "/hi-lo/{game_id}/cancel",
+)
+async def cancel_game(
+    game_id: str,
+    player: PlayerContext = Depends(
+        get_player_context
+    ),
+):
+    return await controller.cancel_game(
+        game_id=game_id,
+        player_id=player.player_id,
+        operator_id=player.operator_id,
+    )

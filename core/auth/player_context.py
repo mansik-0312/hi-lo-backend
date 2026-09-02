@@ -1,38 +1,50 @@
-"""
-Module: core.auth.player_context
-
-Description:
-    Provides a portable player context abstraction for game APIs.
-"""
-
 from dataclasses import dataclass
 
-from fastapi import Request
+from fastapi import (
+    Header,
+    HTTPException,
+    status,
+)
 
 
 @dataclass(frozen=True)
 class PlayerContext:
     """
     Represents the player executing a game request.
-
-    This abstraction keeps game logic independent from
-    casino/operator authentication systems.
     """
 
     player_id: str
+    operator_id: str
 
 
 def get_player_context(
-    request: Request,
+    player_id: str | None = Header(
+        default=None,
+        alias="X-Player-ID",
+    ),
+    operator_id: str | None = Header(
+        default=None,
+        alias="X-Operator-ID",
+    ),
 ) -> PlayerContext:
     """
-    Resolve the current player.
-
-    Temporary implementation:
-    Uses demo-player until real authentication
-    or platform integration is introduced.
+    Resolve the current player and operator
+    from request headers.
     """
 
+    if not player_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Player ID is required.",
+        )
+
+    if not operator_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Operator ID is required.",
+        )
+
     return PlayerContext(
-        player_id="demo-player",
+        player_id=player_id,
+        operator_id=operator_id,
     )

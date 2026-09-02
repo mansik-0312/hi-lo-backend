@@ -32,34 +32,31 @@ class HiLoGameController:
 
         self.service = HiLoGameService()
 
+    # =========================================================
+    # START GAME
+    # =========================================================
+
     async def start_game(
         self,
+        operator_id: str,
         player_id: str,
-        initial_balance: Decimal,
+        currency: str,
     ) -> Dict[str, Any]:
         """
-        Start a new game.
-
-        Args:
-            player_id:
-                Authenticated player identifier.
-
-            initial_balance:
-                Initial game balance.
-
-        Returns:
-            New game information.
+        Start a new Hi-Lo game.
         """
 
         return await self.service.start_game(
+            operator_id=operator_id,
             player_id=player_id,
-            initial_balance=initial_balance,
+            currency=currency,
         )
-
+    
     async def get_game(
         self,
         game_id: str,
         player_id: str,
+        operator_id: str,
     ) -> Dict[str, Any]:
         """
         Retrieve a game.
@@ -78,12 +75,14 @@ class HiLoGameController:
         return await self.service.get_game(
             game_id=game_id,
             player_id=player_id,
+            operator_id=operator_id,
         )
 
     async def play_round(
         self,
         game_id: str,
         player_id: str,
+        operator_id: str,
         bet_amount: Decimal,
         prediction: str,
     ) -> Dict[str, Any]:
@@ -110,6 +109,7 @@ class HiLoGameController:
         return await self.service.play_round(
             game_id=game_id,
             player_id=player_id,
+            operator_id=operator_id,
             bet_amount=bet_amount,
             prediction=prediction,
         )
@@ -182,4 +182,26 @@ class HiLoGameController:
             player_id=player_id,
             skip=skip,
             limit=limit,
+        )
+
+    # =========================================================
+    # CANCEL GAME
+    # =========================================================
+
+    async def cancel_game(
+        self,
+        game_id: str,
+        player_id: str,
+        operator_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Cancel an active Hi-Lo game.
+
+        Only the player who owns the game may cancel it.
+        """
+
+        return await self.service.cancel_game(
+            game_id=game_id,
+            player_id=player_id,
+            operator_id=operator_id,
         )

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from config.db_config import hilo_game_collection
 
+from config.models.enums import GameStatus
 
 class HiLoGameModel(BaseModel):
     """
@@ -32,10 +33,14 @@ class HiLoGameModel(BaseModel):
 
     id: Optional[str] = Field(default=None)
 
+    operator_id: str
+
     player_id: str
 
-    status: str = "active"
+    status: str = GameStatus.ACTIVE.value
 
+    currency: str = "INR"
+    
     current_card: Optional[Dict[str, Any]] = None
 
     balance: Decimal = Decimal("0.00")
@@ -224,6 +229,7 @@ class HiLoGameRepository:
     async def get_player_game(
         game_id: str,
         player_id: str,
+        operator_id: str,
     ) -> Optional[Dict[str, Any]]:
         """
         Retrieve a game belonging to a specific player.
@@ -236,6 +242,7 @@ class HiLoGameRepository:
             {
                 "_id": ObjectId(game_id),
                 "player_id": player_id,
+                "operator_id": operator_id,
             }
         )
 
@@ -320,7 +327,7 @@ class HiLoGameRepository:
         result = await hilo_game_collection.update_one(
             {
                 "_id": ObjectId(game_id),
-                "status": "active",
+                "status": GameStatus.ACTIVE.value,
             },
             {
                 "$set": update_data,

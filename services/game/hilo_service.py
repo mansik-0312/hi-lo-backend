@@ -17,6 +17,8 @@ The service coordinates the game engine and repositories.
 
 It must not contain HTTP-specific logic.
 """
+from fastapi import HTTPException, status
+from uuid import uuid4
 
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -35,6 +37,12 @@ from config.game.hilo_config import (
     HILO_GAME_CONFIG,
     HiLoGameConfig,
 )
+
+from services.wallet.wallet_service import (
+    WalletService,
+)
+
+from config.models.enums import GameStatus, RoundStatus
 
 class HiLoGameService:
     """
@@ -63,61 +71,98 @@ class HiLoGameService:
 
     async def start_game(
         self,
+        operator_id: str,
         player_id: str,
-        initial_balance: Decimal,
+        currency: str,
     ) -> Dict[str, Any]:
         """
         Start a new Hi-Lo game.
 
-        Args:
-            player_id:
-                Identifier of the player.
-
-            initial_balance:
-                Starting balance for the game.
-
-        Returns:
-            Newly created game information.
-
-        Raises:
-            ValueError:
-                If the initial balance is invalid.
+        The player's balance is retrieved from the
+        operator wallet through WalletService.
         """
 
-        if initial_balance <= 0:
-            raise ValueError(
-                "Initial balance must be greater than zero."
+        # -----------------------------------------------------
+        # 1. Get player wallet balance
+        # -----------------------------------------------------
+
+        wallet_balance = (
+            await WalletService.get_balance(
+                operator_id=operator_id,
+                player_id=player_id,
+                currency=currency,
             )
+        )
+
+        balance = Decimal(
+            str(
+                wallet_balance.get(
+                    "balance",
+                    "0",
+                )
+            )
+        )
+
+        # -----------------------------------------------------
+        # 2. Validate balance
+        # -----------------------------------------------------
+
+        if balance <= Decimal("0"):
+            raise ValueError(
+                "Wallet balance must be greater than zero."
+            )
+
+        # -----------------------------------------------------
+        # 3. Create deck
+        # -----------------------------------------------------
 
         deck = self.engine.create_deck()
 
-        self.engine.shuffle_deck(deck)
+        self.engine.shuffle_deck(
+            deck
+        )
 
         current_card, remaining_deck = (
-            self.engine.draw_card(deck)
+            self.engine.draw_card(
+                deck
+            )
         )
+
+        # -----------------------------------------------------
+        # 4. Create game
+        # -----------------------------------------------------
 
         game_data = {
+            "operator_id": operator_id,
             "player_id": player_id,
-            "status": "active",
+            "status": GameStatus.ACTIVE.value,
             "current_card": current_card,
             "remaining_deck": remaining_deck,
-            "balance": initial_balance,
+            "balance": balance,
             "current_round_id": None,
             "round_number": 0,
+            "currency": currency,
         }
 
-        game_id = await HiLoGameRepository.create_game(
-            game_data
+        game_id = (
+            await HiLoGameRepository.create_game(
+                game_data
+            )
         )
+
+        # -----------------------------------------------------
+        # 5. Return game
+        # -----------------------------------------------------
 
         return {
             "game_id": game_id,
-            "status": "active",
+            "operator_id": operator_id,
+            "player_id": player_id,
+            "status": GameStatus.ACTIVE.value,
             "current_card": current_card,
-            "balance": initial_balance,
+            "currency": currency,
+            "balance": balance,
         }
-
     # =========================================================
     # GET GAME
     # =========================================================
@@ -126,6 +171,7 @@ class HiLoGameService:
         self,
         game_id: str,
         player_id: str,
+        operator_id: str,
     ) -> Dict[str, Any]:
         """
         Retrieve the current game state.
@@ -139,6 +185,7 @@ class HiLoGameService:
         game = await HiLoGameRepository.get_player_game(
             game_id=game_id,
             player_id=player_id,
+            operator_id=operator_id,
         )
 
         if not game:
@@ -159,24 +206,38 @@ class HiLoGameService:
         self,
         game_id: str,
         player_id: str,
+        operator_id: str,
         bet_amount: Decimal,
         prediction: str,
     ) -> Dict[str, Any]:
         """
         Play one Higher/Lower round.
 
+        Flow:
+
+            1. Retrieve and validate game.
+            2. Validate prediction and bet.
+            3. Debit bet amount from operator wallet.
+            4. Draw and evaluate next card.
+            5. Calculate payout.
+            6. Credit winnings when payout is greater than zero.
+            7. Persist completed round.
+            8. Update game state.
+            9. Roll back wallet debit if processing fails.
+
         Raises:
             ValueError:
-                If the game cannot accept the round.
+                If the game or wallet operation fails.
         """
 
-        # -----------------------------------------------------
-        # 1. Get game
-        # -----------------------------------------------------
+        # =====================================================
+        # 1. GET GAME
+        # =====================================================
 
         game = await HiLoGameRepository.get_player_game(
             game_id=game_id,
             player_id=player_id,
+            operator_id=operator_id,
         )
 
         if not game:
@@ -184,18 +245,49 @@ class HiLoGameService:
                 "Game not found."
             )
 
-        # -----------------------------------------------------
-        # 2. Validate game state
-        # -----------------------------------------------------
+        # =====================================================
+        # 1. VALIDATE GAME OWNERSHIP
+        # =====================================================
+
+        if game.get("player_id") != player_id:
+            raise ValueError(
+                "You do not have access to this game."
+            )
+
+        # =====================================================
+        # 2. VALIDATE GAME STATE
+        # =====================================================
+
+        if game.get("status") != GameStatus.ACTIVE.value:
+            raise ValueError(
+                "Game is no longer active."
+            )
+        # =====================================================
+        # 2. VALIDATE GAME STATE
+        # =====================================================
 
         if game.get("status") != "active":
             raise ValueError(
                 "Game is no longer active."
             )
 
-        # -----------------------------------------------------
-        # 3. Validate prediction BEFORE drawing a card
-        # -----------------------------------------------------
+        operator_id = game.get(
+            "operator_id"
+        )
+
+        if not operator_id:
+            raise ValueError(
+                "Game operator is missing."
+            )
+
+        currency = game.get(
+            "currency",
+            "INR",
+        )
+
+        # =====================================================
+        # 3. VALIDATE PREDICTION
+        # =====================================================
 
         prediction = prediction.strip().lower()
 
@@ -207,9 +299,9 @@ class HiLoGameService:
                 "Prediction must be 'higher' or 'lower'."
             )
 
-        # -----------------------------------------------------
-        # 4. Validate bet
-        # -----------------------------------------------------
+        # =====================================================
+        # 4. VALIDATE BET
+        # =====================================================
 
         if bet_amount < self.config.min_bet:
             raise ValueError(
@@ -223,7 +315,7 @@ class HiLoGameService:
                 f"{self.config.max_bet}."
             )
 
-        balance = Decimal(
+        game_balance = Decimal(
             str(
                 game.get(
                     "balance",
@@ -232,14 +324,14 @@ class HiLoGameService:
             )
         )
 
-        if bet_amount > balance:
+        if bet_amount > game_balance:
             raise ValueError(
                 "Insufficient game balance."
             )
 
-        # -----------------------------------------------------
-        # 5. Validate deck
-        # -----------------------------------------------------
+        # =====================================================
+        # 5. VALIDATE DECK
+        # =====================================================
 
         remaining_deck = game.get(
             "remaining_deck",
@@ -251,131 +343,440 @@ class HiLoGameService:
                 "No cards remain."
             )
 
-        # -----------------------------------------------------
-        # 6. Draw next card
-        # -----------------------------------------------------
+        # =====================================================
+        # 6. PREPARE WALLET TRANSACTION
+        # =====================================================
 
-        previous_card = game["current_card"]
+        bet_transaction_id = (
+            f"hilo_debit_{uuid4().hex}"
+        )
 
-        next_card, remaining_deck = (
-            self.engine.draw_card(
-                remaining_deck
+        payout_transaction_id = None
+        rollback_transaction_id = None
+
+        debit_completed = False
+        payout_completed = False
+
+        try:
+
+            # =================================================
+            # 7. DEBIT BET FROM WALLET
+            # =================================================
+
+            wallet_debit = await WalletService.debit(
+                operator_id=operator_id,
+                player_id=player_id,
+                amount=bet_amount,
+                currency=currency,
+                transaction_id=bet_transaction_id,
             )
-        )
 
-        # -----------------------------------------------------
-        # 7. Evaluate result
-        # -----------------------------------------------------
+            if wallet_debit.get("status") != "success":
+                raise ValueError(
+                    "Wallet debit failed."
+                )
 
-        result = self.engine.evaluate_prediction(
-            prediction=prediction,
-            previous_card=previous_card,
-            next_card=next_card,
-        )
+            debit_completed = True
 
-        # -----------------------------------------------------
-        # 8. Calculate payout
-        # -----------------------------------------------------
-
-        payout = Decimal(
-            str(
-                self.engine.calculate_payout(
-                    float(bet_amount),
-                    result,
-                    float(
-                        self.config.win_payout_multiplier
-                    ),
+            # Wallet balance immediately after debit.
+            wallet_balance = Decimal(
+                str(
+                    wallet_debit.get(
+                        "balance",
+                        "0",
+                    )
                 )
             )
-        )
 
-        # -----------------------------------------------------
-        # 9. Calculate new balance
-        # -----------------------------------------------------
+            # =================================================
+            # 8. DRAW NEXT CARD
+            # =================================================
 
-        new_balance = (
-            balance
-            - bet_amount
-            + payout
-        )
+            previous_card = game[
+                "current_card"
+            ]
 
-        # -----------------------------------------------------
-        # 10. Calculate round number
-        # -----------------------------------------------------
-
-        round_number = (
-            game.get(
-                "round_number",
-                0,
+            next_card, updated_remaining_deck = (
+                self.engine.draw_card(
+                    remaining_deck
+                )
             )
-            + 1
-        )
 
-        # -----------------------------------------------------
-        # 11. Persist round
-        # -----------------------------------------------------
+            # =================================================
+            # 9. EVALUATE RESULT
+            # =================================================
 
-        round_data = {
-            "game_id": game_id,
-            "player_id": player_id,
-            "round_number": round_number,
-            "bet_amount": bet_amount,
-            "prediction": prediction,
-            "previous_card": previous_card,
-            "next_card": next_card,
-            "result": result,
-            "payout": payout,
-            "status": "completed",
-        }
-
-        round_id = (
-            await HiLoRoundRepository.create_round(
-                round_data
+            result = (
+                self.engine.evaluate_prediction(
+                    prediction=prediction,
+                    previous_card=previous_card,
+                    next_card=next_card,
+                )
             )
-        )
 
-        # -----------------------------------------------------
-        # 12. Determine game status
-        # -----------------------------------------------------
+            # =================================================
+            # 10. CALCULATE PAYOUT
+            # =================================================
 
-        game_status = (
-            "completed"
-            if not remaining_deck
-            else "active"
-        )
+            payout = Decimal(
+                str(
+                    self.engine.calculate_payout(
+                        float(bet_amount),
+                        result,
+                        float(
+                            self.config
+                            .win_payout_multiplier
+                        ),
+                    )
+                )
+            )
 
-        # -----------------------------------------------------
-        # 13. Persist updated game
-        # -----------------------------------------------------
+            # =================================================
+            # 11. CREDIT PAYOUT TO WALLET
+            # =================================================
 
-        await HiLoGameRepository.update_game(
-            game_id,
-            {
-                "current_card": next_card,
-                "remaining_deck": remaining_deck,
-                "balance": new_balance,
-                "current_round_id": round_id,
-                "round_number": round_number,
-                "status": game_status,
-            },
-        )
+            if payout > Decimal("0"):
 
-        # -----------------------------------------------------
-        # 14. Return existing API response
-        # -----------------------------------------------------
+                payout_transaction_id = (
+                    f"hilo_payout_{uuid4().hex}"
+                )
 
-        return {
-            "game_id": game_id,
-            "round_id": round_id,
-            "previous_card": previous_card,
-            "next_card": next_card,
-            "prediction": prediction,
-            "result": result,
-            "bet_amount": bet_amount,
-            "payout": payout,
-            "balance": new_balance,
-        }
+                wallet_credit = (
+                    await WalletService.credit(
+                        operator_id=operator_id,
+                        player_id=player_id,
+                        amount=payout,
+                        currency=currency,
+                        transaction_id=(
+                            payout_transaction_id
+                        ),
+                    )
+                )
 
+                if (
+                    wallet_credit.get(
+                        "status"
+                    )
+                    != "success"
+                ):
+                    raise ValueError(
+                        "Wallet payout credit failed."
+                    )
+
+                payout_completed = True
+
+                # Final balance after payout credit.
+                wallet_balance = Decimal(
+                    str(
+                        wallet_credit.get(
+                            "balance",
+                            "0",
+                        )
+                    )
+                )
+                # -----------------------------------------------------
+                # TEST ONLY: Force failure after payout credit
+                # -----------------------------------------------------
+
+                # raise ValueError(
+                #     "TEST: Forced failure after payout credit."
+                # )
+            # =================================================
+            # 12. FINAL BALANCE
+            # =================================================
+
+            new_balance = wallet_balance
+
+            # =================================================
+            # 13. CALCULATE ROUND NUMBER
+            # =================================================
+
+            round_number = (
+                game.get(
+                    "round_number",
+                    0,
+                )
+                + 1
+            )
+
+            # =================================================
+            # 14. DETERMINE GAME STATUS
+            # =================================================
+
+            game_status = (
+                "completed"
+                if not updated_remaining_deck
+                else "active"
+            )
+
+            # =================================================
+            # 15. PERSIST ROUND
+            # =================================================
+
+            round_data = {
+                "game_id": game_id,
+                "operator_id": operator_id,
+                "player_id": player_id,
+
+                "currency": currency,
+
+                "round_number": (
+                    round_number
+                ),
+
+                "bet_amount": (
+                    bet_amount
+                ),
+
+                "prediction": (
+                    prediction
+                ),
+
+                "previous_card": (
+                    previous_card
+                ),
+
+                "next_card": (
+                    next_card
+                ),
+
+                "result": result,
+
+                "payout": payout,
+
+                # ---------------------------------------------
+                # WALLET TRANSACTION AUDIT
+                # ---------------------------------------------
+
+                "bet_transaction_id": (
+                    bet_transaction_id
+                ),
+
+                "payout_transaction_id": (
+                    payout_transaction_id
+                ),
+
+                "rollback_transaction_id": (
+                    rollback_transaction_id
+                ),
+
+                "status": "completed",
+            }
+
+            round_id = (
+                await HiLoRoundRepository.create_round(
+                    round_data
+                )
+            )
+
+            # =================================================
+            # 16. UPDATE GAME
+            # =================================================
+
+            game_updated = (
+                await HiLoGameRepository.update_game(
+                    game_id,
+                    {
+                        "current_card": (
+                            next_card
+                        ),
+
+                        "remaining_deck": (
+                            updated_remaining_deck
+                        ),
+
+                        "balance": (
+                            new_balance
+                        ),
+
+                        "current_round_id": (
+                            round_id
+                        ),
+
+                        "round_number": (
+                            round_number
+                        ),
+
+                        "status": (
+                            game_status
+                        ),
+                    },
+                )
+            )
+
+            if not game_updated:
+                raise ValueError(
+                    "Unable to update game."
+                )
+
+            # =================================================
+            # 17. RETURN RESULT
+            # =================================================
+
+            return {
+                "game_id": game_id,
+
+                "round_id": round_id,
+
+                "previous_card": (
+                    previous_card
+                ),
+
+                "next_card": (
+                    next_card
+                ),
+
+                "prediction": prediction,
+
+                "result": result,
+
+                "bet_amount": (
+                    bet_amount
+                ),
+
+                "payout": payout,
+
+                "currency": currency,
+
+                "balance": (
+                    new_balance
+                ),
+            }
+
+        except Exception as exc:
+
+            print(
+                "ORIGINAL ERROR:",
+                str(exc),
+            )
+
+            print(
+                "debit_completed:",
+                debit_completed,
+            )
+
+            print(
+                "payout_completed:",
+                payout_completed,
+            )
+
+            print(
+                "bet_transaction_id:",
+                bet_transaction_id,
+            )
+
+            print(
+                "payout_transaction_id:",
+                payout_transaction_id,
+            )
+
+            # =================================================
+            # COMPENSATE PAYOUT TRANSACTION
+            # =================================================
+
+            if payout_completed and payout_transaction_id:
+
+                try:
+
+                    print(
+                        "STARTING PAYOUT ROLLBACK"
+                    )
+
+                    payout_rollback_transaction_id = (
+                        f"hilo_payout_rollback_{uuid4().hex}"
+                    )
+
+                    payout_rollback_response = (
+                        await WalletService.rollback(
+                            operator_id=operator_id,
+                            player_id=player_id,
+                            amount=payout,
+                            currency=currency,
+                            transaction_id=(
+                                payout_rollback_transaction_id
+                            ),
+                            original_transaction_id=(
+                                payout_transaction_id
+                            ),
+                        )
+                    )
+
+                    print(
+                        "PAYOUT ROLLBACK RESPONSE:",
+                        payout_rollback_response,
+                    )
+
+                    if (
+                        payout_rollback_response.get(
+                            "status"
+                        )
+                        != "success"
+                    ):
+                        raise ValueError(
+                            "Payout rollback failed."
+                        )
+
+                except Exception as rollback_exc:
+
+                    print(
+                        "PAYOUT ROLLBACK FAILED:",
+                        str(rollback_exc),
+                    )
+
+            # =================================================
+            # COMPENSATE BET DEBIT TRANSACTION
+            # =================================================
+
+            if debit_completed and bet_transaction_id:
+
+                try:
+
+                    print(
+                        "STARTING BET ROLLBACK"
+                    )
+
+                    bet_rollback_transaction_id = (
+                        f"hilo_bet_rollback_{uuid4().hex}"
+                    )
+
+                    bet_rollback_response = (
+                        await WalletService.rollback(
+                            operator_id=operator_id,
+                            player_id=player_id,
+                            amount=bet_amount,
+                            currency=currency,
+                            transaction_id=(
+                                bet_rollback_transaction_id
+                            ),
+                            original_transaction_id=(
+                                bet_transaction_id
+                            ),
+                        )
+                    )
+
+                    print(
+                        "BET ROLLBACK RESPONSE:",
+                        bet_rollback_response,
+                    )
+
+                    if (
+                        bet_rollback_response.get(
+                            "status"
+                        )
+                        != "success"
+                    ):
+                        raise ValueError(
+                            "Bet rollback failed."
+                        )
+
+                except Exception as rollback_exc:
+
+                    print(
+                        "BET ROLLBACK FAILED:",
+                        str(rollback_exc),
+                    )
+
+            raise exc        
     # =========================================================
     # ROUND SERIALIZATION
     # =========================================================
@@ -478,9 +879,6 @@ class HiLoGameService:
         skip: int = 0,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
-        """
-        Retrieve round history for a player.
-        """
 
         if skip < 0:
             raise ValueError(
@@ -497,7 +895,7 @@ class HiLoGameService:
                 "Limit cannot exceed 100."
             )
 
-        rounds = (
+        rounds, total = (
             await HiLoRoundRepository.get_player_rounds(
                 player_id=player_id,
                 skip=skip,
@@ -505,13 +903,14 @@ class HiLoGameService:
             )
         )
 
+        print("ROUNDS:", rounds)
+        print("ROUNDS TYPE:", type(rounds))
         return [
             self._serialize_round(
                 round_data
             )
             for round_data in rounds
         ]
-
     # =========================================================
     # GET SPECIFIC GAME ROUND
     # =========================================================
@@ -580,4 +979,86 @@ class HiLoGameService:
             "player_id": player_id,
             "games": games,
             "total": total,
+        }
+
+    # =========================================================
+    # CANCEL GAME
+    # =========================================================
+
+    async def cancel_game(
+        self,
+        game_id: str,
+        player_id: str,
+        operator_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Cancel an active Hi-Lo game.
+
+        A game may only be cancelled by its owner and
+        only while its status is ACTIVE.
+        """
+
+        # -----------------------------------------------------
+        # 1. Get game
+        # -----------------------------------------------------
+
+        game = await HiLoGameRepository.get_game_by_id(
+            game_id
+        )
+
+        if not game:
+            raise ValueError(
+                "Game not found."
+            )
+
+        # -----------------------------------------------------
+        # 2. Ownership validation
+        # -----------------------------------------------------
+
+        if game["player_id"] != player_id:
+            raise ValueError(
+                "You do not have permission to cancel this game."
+            )
+
+        # -----------------------------------------------------
+        # 3. Validate lifecycle state
+        # -----------------------------------------------------
+
+        if (
+            game["status"]
+            != GameStatus.ACTIVE.value
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Only active games can be cancelled."
+                ),
+            )
+
+        # -----------------------------------------------------
+        # 4. Cancel game
+        # -----------------------------------------------------
+
+        updated = (
+            await HiLoGameRepository.update_game_if_active(
+                game_id=game_id,
+                update_data={
+                    "status": GameStatus.CANCELLED.value,
+                },
+            )
+        )
+
+        if not updated:
+            raise ValueError(
+                "Game could not be cancelled."
+            )
+
+        # -----------------------------------------------------
+        # 5. Return result
+        # -----------------------------------------------------
+
+        return {
+            "game_id": game_id,
+            "status": GameStatus.CANCELLED.value,
+            "message": "Game cancelled successfully.",
         }

@@ -22,22 +22,16 @@ class HiLoPrediction(str):
     HIGHER = "higher"
     LOWER = "lower"
 
-
 class StartGameRequest(BaseModel):
     """
     Request schema for starting a new Hi-Lo game.
-
-    Attributes:
-        initial_balance:
-            Initial balance assigned to the game session.
     """
 
-    initial_balance: Decimal = Field(
-        default=Decimal("0.00"),
-        ge=0,
-        decimal_places=2,
+    currency: str = Field(
+        default="INR",
+        min_length=3,
+        max_length=10,
     )
-
 
 class CardResponse(BaseModel):
     """
