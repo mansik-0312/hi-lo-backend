@@ -5,18 +5,27 @@ from urllib.parse import quote_plus
 from core.utils.logging_config import logging
 
 logger = logging.getLogger(__name__)
-if settings.MONGO_USER and settings.MONGO_PASSWORD:
+
+
+# Use full MongoDB URI if provided (recommended for MongoDB Atlas)
+MONGODB_URI = os.getenv("MONGODB_URI")
+
+if MONGODB_URI:
+    uri = MONGODB_URI
+    logger.info("Using MongoDB URI")
+
+elif settings.MONGO_USER and settings.MONGO_PASSWORD:
     username = quote_plus(settings.MONGO_USER)
     password = quote_plus(settings.MONGO_PASSWORD)
-    uri = f"mongodb://{username}:{password}@{settings.MONGO_HOST}:{settings.MONGO_PORT}/{settings.MONGO_DATABASE}"
-    logger.info('db compass url dev-----------------------',uri)
+
+    uri = (
+        f"mongodb://{username}:{password}"
+        f"@{settings.MONGO_HOST}:{settings.MONGO_PORT}"
+        f"/{settings.MONGO_DATABASE}"
+    )
 
 else:
     uri = f"mongodb://{settings.MONGO_HOST}:{settings.MONGO_PORT}"
-    logger.info('db compass url local-----------------------',uri)
-
-
-DB_NAME = os.getenv("DB_NAME", "boilerplate_db")  # <-- put your db name here
 
 
 client = AsyncIOMotorClient(
@@ -26,7 +35,7 @@ client = AsyncIOMotorClient(
     maxIdleTimeMS=30000,
     serverSelectionTimeoutMS=5000,
     connectTimeoutMS=10000,
-    socketTimeoutMS=30000,  # Increased to 30s for safety
+    socketTimeoutMS=30000,
     retryWrites=True,
     retryReads=True,
     compressors="zlib",
@@ -34,8 +43,9 @@ client = AsyncIOMotorClient(
     maxConnecting=10
 )
 
-db = client["DB_NAME"]
+
+# Use the actual database name
+db = client[settings.MONGO_DATABASE]
 
 user_collection = db["users"]
 token_collection = db["tokens"]
-
