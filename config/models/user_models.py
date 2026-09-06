@@ -5,7 +5,7 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import core_schema
 from bson import ObjectId
 from datetime import datetime, date, timedelta, timezone
-from config.db_config import db
+from config.db_config import database
 from config.db_config import user_collection,token_collection, file_collection
 from core.utils.response_mixin import CustomResponseMixin
 from enum import Enum

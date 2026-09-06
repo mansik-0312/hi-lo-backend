@@ -1,113 +1,465 @@
-# from pymongo.mongo_client import MongoClient
-from motor.motor_asyncio import AsyncIOMotorClient  #for the cron job to query in scheuler
-from config.basic_config import settings
+"""
+Module: config.db_config
+
+Description:
+    MongoDB database configuration for the Hi-Lo platform.
+"""
+
+import logging
 from urllib.parse import quote_plus
+
+from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING
-import asyncio
-from core.utils.logging_config import logging
+
+from config.basic_config import settings
+
 
 logger = logging.getLogger(__name__)
-#uri = "mongodb://localhost:27017/"
 
-# Construct MongoDB URI using settings variables
-if settings.MONGO_USER and settings.MONGO_PASSWORD:
-    username = quote_plus(settings.MONGO_USER)
-    password = quote_plus(settings.MONGO_PASSWORD)
-    uri = f"mongodb://{username}:{password}@{settings.MONGO_HOST}:{settings.MONGO_PORT}/{settings.MONGO_DATABASE}"
-    logger.info('db compass url dev-----------------------',uri)
+
+# ============================================================================
+# DATABASE URL
+# ============================================================================
+
+if settings.MONGO_AUTH_ENABLED:
+
+    if not settings.MONGO_USER:
+        raise ValueError(
+            "MONGO_USER is required when "
+            "MONGO_AUTH_ENABLED=true"
+        )
+
+    if not settings.MONGO_PASSWORD:
+        raise ValueError(
+            "MONGO_PASSWORD is required when "
+            "MONGO_AUTH_ENABLED=true"
+        )
+
+    mongo_user = quote_plus(
+        settings.MONGO_USER
+    )
+
+    mongo_password = quote_plus(
+        settings.MONGO_PASSWORD
+    )
+
+    MONGODB_URL = (
+        f"mongodb://{mongo_user}:{mongo_password}"
+        f"@{settings.MONGO_HOST}:{settings.MONGO_PORT}"
+        f"/{settings.MONGO_DATABASE}"
+        f"?authSource={settings.MONGO_AUTH_SOURCE}"
+    )
 
 else:
-    uri = f"mongodb://{settings.MONGO_HOST}:{settings.MONGO_PORT}"
-    logger.info('db compass url local-----------------------',uri)
 
-# Singleton MongoDB client with optimized connection pooling
-class MongoDBClient:
-    _instance = None
-    _client = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(MongoDBClient, cls).__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if self._client is None:
-            self._client = AsyncIOMotorClient(
-                uri,
-                maxPoolSize=100,  # Increased from 50 for better performance
-                minPoolSize=20,   # Increased from 10 for better performance
-                maxIdleTimeMS=30000,  # Close connections after 30 seconds of inactivity
-                serverSelectionTimeoutMS=5000,  # Timeout for server selection
-                connectTimeoutMS=10000,  # Connection timeout
-                # socketTimeoutMS=30000,  # Socket timeout
-                 socketTimeoutMS=300000,  # Socket timeout
-                retryWrites=True,  # Enable retry for write operations
-                retryReads=True,  # Enable retry for read operations
-                compressors="zlib",  # Enable compression
-                waitQueueTimeoutMS=5000,  # Wait queue timeout
-                maxConnecting=10  # Maximum concurrent connection attempts
-            )
-    
-    @property
-    def client(self):
-        return self._client
-    
-    async def close(self):
-        """Close MongoDB connections properly"""
-        if self._client:
-            self._client.close()
-    
-    async def ping(self):
-        """Test database connectivity"""
-        try:
-            await self._client.admin.command('ping')
-            return True
-        except Exception as e:
-            return False
+    MONGODB_URL = (
+        f"mongodb://"
+        f"{settings.MONGO_HOST}:"
+        f"{settings.MONGO_PORT}"
+        f"/{settings.MONGO_DATABASE}"
+    )
 
-# Create singleton instance
-mongodb_client = MongoDBClient()
-client = mongodb_client.client
-db = client[settings.MONGO_DATABASE]
 
-# Collection definitions
-user_collection = db["users"]
-token_collection = db["tokens"]
-file_collection = db["files"]
-admin_collection = db["Admin"]
-notification_collection = db["notifications"]
-fcm_device_tokens_collection = db["fcm_device_tokens"]
+# ============================================================================
+# MONGODB CLIENT
+# ============================================================================
 
-async def create_indexes():
+mongo_client = AsyncIOMotorClient(
+    MONGODB_URL
+)
+
+
+database = mongo_client[
+    settings.MONGO_DATABASE
+]
+
+
+# ============================================================================
+# COLLECTIONS
+# ============================================================================
+
+operator_collection = database[
+    "operators"
+]
+
+player_collection = database[
+    "players"
+]
+
+adapter_collection = database[
+    "adapters"
+]
+
+game_config_collection = database[
+    "game_configurations"
+]
+
+hilo_game_collection = database[
+    "hilo_games"
+]
+
+hilo_round_collection = database[
+    "hilo_rounds"
+]
+
+transaction_collection = database[
+    "transactions"
+]
+
+audit_log_collection = database[
+    "audit_logs"
+]
+
+user_collection = database[
+    "users"
+]
+
+token_collection = database[
+    "tokens"
+]
+
+file_collection = database[
+    "files"
+]
+
+admin_collection = database[
+    "Admin"
+]
+
+notification_collection = database[
+    "notifications"
+]
+
+fcm_device_tokens_collection = database[
+    "fcm_device_tokens"
+]
+
+wallet_operation_collection = database[
+    "wallet_operations"
+]
+
+idempotency_collection = database[
+    "idempotency_keys"
+]
+
+
+# ============================================================================
+# DATABASE INDEXES
+# ============================================================================
+
+async def create_indexes() -> bool:
     """
-    Placeholder for database indexes.
-    Currently no indexes are created.
+    Create indexes required by the Hi-Lo platform.
     """
+
     try:
-        # No indexes to create at the moment
+
+        # ====================================================================
+        # OPERATORS
+        # ====================================================================
+
+        await operator_collection.create_index(
+            [
+                ("operator_code", ASCENDING),
+            ],
+            unique=True,
+        )
+
+        await operator_collection.create_index(
+            [
+                ("status", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # PLAYERS
+        # ====================================================================
+
+        await player_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("external_player_id", ASCENDING),
+            ],
+            unique=True,
+        )
+
+
+        # ====================================================================
+        # ADAPTERS
+        # ====================================================================
+
+        await adapter_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("adapter_type", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # GAME CONFIGURATIONS
+        # ====================================================================
+
+        await game_config_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("game_code", ASCENDING),
+            ],
+            unique=True,
+        )
+
+        await game_config_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("game_code", ASCENDING),
+                ("status", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # GAMES
+        # ====================================================================
+
+        await hilo_game_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("player_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+        await hilo_game_collection.create_index(
+            [
+                ("status", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # ROUNDS
+        # ====================================================================
+
+        await hilo_round_collection.create_index(
+            [
+                ("game_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+        await hilo_round_collection.create_index(
+            [
+                ("player_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # TRANSACTIONS
+        # ====================================================================
+
+        await transaction_collection.create_index(
+            [
+                ("transaction_id", ASCENDING),
+            ],
+            unique=True,
+        )
+
+        await transaction_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            unique=True,
+            sparse=True,
+        )
+
+        await transaction_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("external_transaction_id", ASCENDING),
+            ],
+            sparse=True,
+        )
+
+        await transaction_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("player_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+        await transaction_collection.create_index(
+            [
+                ("game_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+        await transaction_collection.create_index(
+            [
+                ("round_id", ASCENDING),
+                ("created_at", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # WALLET OPERATIONS
+        # ====================================================================
+
+        await wallet_operation_collection.create_index(
+            [
+                ("transaction_id", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # AUDIT LOGS
+        # ====================================================================
+
+        await audit_log_collection.create_index(
+            [
+                ("request_id", ASCENDING),
+                ("created_at", ASCENDING),
+            ],
+        )
+
+        await audit_log_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+        await audit_log_collection.create_index(
+            [
+                ("player_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+        )
+
+        await audit_log_collection.create_index(
+            [
+                ("game_id", ASCENDING),
+                ("created_at", ASCENDING),
+            ],
+        )
+
+        await audit_log_collection.create_index(
+            [
+                ("round_id", ASCENDING),
+                ("created_at", ASCENDING),
+            ],
+        )
+
+        await audit_log_collection.create_index(
+            [
+                ("transaction_id", ASCENDING),
+                ("created_at", ASCENDING),
+            ],
+        )
+
+
+        # ====================================================================
+        # IDEMPOTENCY
+        # ====================================================================
+
+        await idempotency_collection.create_index(
+            [
+                ("operator_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            unique=True,
+        )
+
+
+        logger.info(
+            "MongoDB indexes created successfully."
+        )
+
         return True
-    except Exception as e:
-        logger.error(f"------------Error creating indexes: {e}")
+
+    except Exception as exc:
+
+        logger.error(
+            "Error creating database indexes: %s",
+            exc,
+        )
+
         return False
 
-        
-async def initialize_database():
-    """Initialize database connection and test connectivity"""
+
+# ============================================================================
+# DATABASE INITIALIZATION
+# ============================================================================
+
+async def initialize_database() -> bool:
+    """
+    Initialize and verify the MongoDB connection.
+    """
+
     try:
-        # Test the connection during startup
-        is_connected = await mongodb_client.ping()
-        if is_connected:
-            return True
-        else:
+
+        await mongo_client.admin.command(
+            "ping"
+        )
+
+        logger.info(
+            "MongoDB ping successful."
+        )
+
+        indexes_created = await create_indexes()
+
+        if not indexes_created:
+
+            logger.error(
+                "MongoDB connected, "
+                "but index creation failed."
+            )
+
             return False
-    except Exception as e:
+
+        logger.info(
+            "MongoDB initialized successfully."
+        )
+
+        return True
+
+    except Exception as exc:
+
+        logger.error(
+            "Database initialization failed: %s",
+            exc,
+        )
+
         return False
 
-async def close_database():
-    """Close database connections properly"""
-    try:
-        await mongodb_client.close()
-    except Exception as e:
-        logger.error(f"❌ Error closing database connections: {e}")
 
-        
+# ============================================================================
+# DATABASE SHUTDOWN
+# ============================================================================
+
+async def close_database() -> None:
+    """
+    Close MongoDB connection during application shutdown.
+    """
+
+    try:
+
+        mongo_client.close()
+
+        logger.info(
+            "MongoDB connection closed successfully."
+        )
+
+    except Exception as exc:
+
+        logger.error(
+            "Error closing MongoDB connection: %s",
+            exc,
+        )

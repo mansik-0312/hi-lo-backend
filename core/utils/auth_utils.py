@@ -5,7 +5,7 @@ from redis import Redis
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
-from typing import Optional
+from typing import Dict, Optional, Any
 from config.basic_config import settings
 from .response_mixin import CustomResponseMixin
 from schemas.tokens_schema import TokenData
@@ -42,40 +42,85 @@ def verify_password(plain_pwd, hashed_pwd) -> bool:
 
 
 # Function to Genrating access token
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> None:
+def create_access_token(
+    data: Dict[str, Any],
+    expires_delta: timedelta | None = None,
+) -> str:
+
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_ACCESS_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+
+    expire = (
+        datetime.now(timezone.utc)
+        + (
+            expires_delta
+            or timedelta(
+                minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+            )
+        )
+    )
+
+    to_encode.update(
+        {
+            "exp": expire,
+            "token_type": "access",
+        }
+    )
+
+    return jwt.encode(
+        to_encode,
+        settings.SECRET_ACCESS_KEY,
+        algorithm=settings.ALGORITHM,
+    )
 
 
 # Function to create_refresh_token
-def create_refresh_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=REFRESH_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_REFRESH_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+def create_refresh_token(
+    data: Dict[str, Any],
+) -> str:
 
+    to_encode = data.copy()
+
+    expire = (
+        datetime.now(timezone.utc)
+        + timedelta(
+            minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES
+        )
+    )
+
+    to_encode.update(
+        {
+            "exp": expire,
+            "token_type": "refresh",
+        }
+    )
+
+    return jwt.encode(
+        to_encode,
+        settings.SECRET_REFRESH_KEY,
+        algorithm=settings.ALGORITHM,
+    )
 
 # Function to verify a token and extract user info
-def verify_token(token: str) -> TokenData:
-    try:
-        payload = jwt.decode(token, SECRET_ACCESS_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        user_id: str = payload.get("user_id")
-        if username is None or user_id is None:
-            return response.error_message("Invalid credentials", status_code=403)
-        else:
-            return response.success_message("Successfully loged In")
-        return TokenData(username=username, user_id=user_id)
-    except JWTError as e:
-        return response.error_message("Invalid credentials", data=str(e), status_code=403)
+def verify_refresh_token(
+    refresh_token: str,
+):
+    payload = jwt.decode(
+        refresh_token,
+        settings.SECRET_REFRESH_KEY,
+        algorithms=[
+            settings.ALGORITHM
+        ],
+    )
 
+    if payload.get(
+        "token_type"
+    ) != "refresh":
+
+        raise ValueError(
+            "Invalid refresh token."
+        )
+
+    return payload
 
 # Function to generate_verification_code
 def generate_verification_code(length: int =4) -> str:
@@ -97,36 +142,53 @@ def verify_refresh_token(refresh_token: str):
     payload = jwt.decode(refresh_token, SECRET_REFRESH_KEY, algorithms=[ALGORITHM])
     return payload  # This should include the token data
 
-def generate_login_tokens(user):
-    user_id = str(user["_id"])
-    email = user["email"]
+from core.auth.jwt_handler import (
+    create_access_token,
+    create_refresh_token,
+)
 
-    user_data = {
-        "sub": email,
-        "user_id": user_id,
-        "role": user.get("role", "user")
-    }
 
-    # Create tokens
-    access_token = create_access_token(user_data)
-    refresh_token = create_refresh_token(user_data)
+def generate_login_tokens(
+    user: dict,
+    player_id: str,
+    operator_id: str,
+):
+    """
+    Generate JWT access and refresh tokens
+    for an authenticated player.
+    """
 
-    # Decode expiry times
-    access_payload = jwt.decode(access_token, SECRET_ACCESS_KEY, algorithms=[ALGORITHM])
-    refresh_payload = jwt.decode(refresh_token, SECRET_REFRESH_KEY, algorithms=[ALGORITHM])
-
-    access_expire = datetime.fromtimestamp(access_payload["exp"])
-    refresh_expire = datetime.fromtimestamp(refresh_payload["exp"])
-
-    # Store tokens in DB
-    store_token(
-        user_id=user_id,
-        email=email,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        access_token_expire=access_expire,
-        refresh_token_expire=refresh_expire
+    user_id = str(
+        user["_id"]
     )
 
-    return access_token, refresh_token
+    email = user[
+        "email"
+    ]
 
+    token_data = {
+        "sub": email,
+        "user_id": user_id,
+
+        "player_id": player_id,
+
+        "operator_id": operator_id,
+
+        "role": user.get(
+            "role",
+            "user",
+        ),
+    }
+
+    access_token = create_access_token(
+        token_data
+    )
+
+    refresh_token = create_refresh_token(
+        token_data
+    )
+
+    return (
+        access_token,
+        refresh_token,
+    )

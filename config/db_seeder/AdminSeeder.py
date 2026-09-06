@@ -1,10 +1,10 @@
 from config.basic_config import settings
 # from db_config import db
-from config.db_config import db
+from config.db_config import database
 from core.security import hash_password
 from datetime import datetime
 
-admin_collection = db["Admin"]
+admin_collection = database["Admin"]
 
 async def seed_admin():
     existing_admin = await admin_collection.find_one(

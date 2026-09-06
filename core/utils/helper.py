@@ -107,36 +107,101 @@ def convert_objectid_to_str(obj):
     else:
         return obj
 
-async def finalize_login_response(user: dict, lang: str):
+async def finalize_login_response(
+    user: dict,
+    player_id: str,
+    operator_id: str,
+    lang: str,
+):
     """
-    Common login finalization logic:
-    - generate tokens
-    - update login status
-    - fetch onboarding completion
-    - return standardized response
+    Finalize user login and generate JWT tokens.
     """
-    access_token, refresh_token = generate_login_tokens(user)
 
-    await user_collection.update_one(
-        {"_id": user["_id"]},
+    access_token, refresh_token = (
+        generate_login_tokens(
+            user=user,
+            player_id=player_id,
+            operator_id=operator_id,
+        )
+    )
+
+    # Store refresh token in database
+    await token_collection.insert_one(
         {
-            "$set": {
-                "login_status": LoginStatus.ACTIVE,
-                "last_login_at": datetime.utcnow()
-            }
+            "user_id": str(
+                user["_id"]
+            ),
+
+            "refresh_token": refresh_token,
+
+            "is_blacklisted": False,
+
+            "created_at": datetime.utcnow(),
+
+            "updated_at": None,
         }
     )
 
+    # Update user login status
+    await user_collection.update_one(
+        {
+            "_id": user["_id"],
+        },
+        {
+            "$set": {
+                "login_status": (
+                    LoginStatus.ACTIVE
+                ),
+
+                "last_login_at": (
+                    datetime.utcnow()
+                ),
+            }
+        },
+    )
+
     return response.success_message(
-        translate_message("LOGIN_SUCCESSFUL", lang=lang),
-        data=[{
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "two_factor_enabled": user.get("two_factor_enabled", False),
-            "user_id": str(user.get("_id")),
-            "username": user.get("username")
-        }],
-        status_code=200
+        translate_message(
+            "LOGIN_SUCCESSFUL",
+            lang=lang,
+        ),
+        data=[
+            {
+                "access_token": (
+                    access_token
+                ),
+
+                "refresh_token": (
+                    refresh_token
+                ),
+
+                "user_id": str(
+                    user["_id"]
+                ),
+
+                "player_id": (
+                    player_id
+                ),
+
+                "operator_id": (
+                    operator_id
+                ),
+
+                "username": (
+                    user.get(
+                        "username"
+                    )
+                ),
+
+                "role": (
+                    user.get(
+                        "role",
+                        "user",
+                    )
+                ),
+            }
+        ],
+        status_code=200,
     )
 
 def convert_datetime_to_date(obj, date_format="%Y-%m-%d"):

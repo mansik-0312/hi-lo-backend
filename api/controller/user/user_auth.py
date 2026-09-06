@@ -27,91 +27,321 @@ REFRESH_TOKEN_EXPIRE_MINUTES =int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
 
 response = CustomResponseMixin()
 
-#controller for refresh_token
-async def refresh_token(request: RefreshTokenRequest, lang: str = "en"):
+async def refresh_token(
+    request: RefreshTokenRequest,
+    lang: str = "en",
+):
     """
-    Refresh the access token using a valid refresh token.
+    Refresh access token using a valid refresh token.
     """
-    # Check if the token exists in the collection
-    result  = await token_collection.find_one({"refresh_token": request.refresh_token})
-    existing_token = await result if isinstance(result, asyncio.Future) else result
-    if not existing_token:
-        raise response.raise_exception(message=translate_message("REFRESH_TOKEN_NOT_FOUND", lang), data={}, status_code=400)
 
-    # Check if the token is blacklisted
-    if existing_token.get("is_blacklisted", True):
-        raise response.raise_exception(
-            message=translate_message("REFRESH_TOKEN_BLACKLISTED", lang), data={}, status_code=401
+    # =====================================================
+    # FIND REFRESH TOKEN
+    # =====================================================
+
+    existing_token = (
+        await token_collection.find_one(
+            {
+                "refresh_token": (
+                    request.refresh_token
+                )
+            }
+        )
+    )
+
+    if not existing_token:
+
+        return response.error_message(
+            translate_message(
+                "REFRESH_TOKEN_NOT_FOUND",
+                lang=lang,
+            ),
+            status_code=400,
         )
 
-    # Verify token and generate new access token
-    token_data = verify_refresh_token(request.refresh_token)
+    # =====================================================
+    # CHECK BLACKLIST
+    # =====================================================
+
+    if existing_token.get(
+        "is_blacklisted",
+        False,
+    ):
+
+        return response.error_message(
+            translate_message(
+                "REFRESH_TOKEN_BLACKLISTED",
+                lang=lang,
+            ),
+            status_code=401,
+        )
+
+    # =====================================================
+    # VERIFY REFRESH TOKEN
+    # =====================================================
+
+    try:
+
+        token_data = verify_refresh_token(
+            request.refresh_token
+        )
+
+    except Exception:
+
+        return response.error_message(
+            translate_message(
+                "INVALID_REFRESH_TOKEN",
+                lang=lang,
+            ),
+            status_code=401,
+        )
+
+    # =====================================================
+    # FIND USER
+    # =====================================================
+
+    user = await user_collection.find_one(
+        {
+            "email": token_data.get(
+                "sub"
+            )
+        }
+    )
+
+    if not user:
+
+        return response.error_message(
+            "USER_NOT_FOUND",
+            status_code=404,
+        )
+
+    # =====================================================
+    # GET PLAYER / OPERATOR
+    # =====================================================
+
+    player_id = user.get(
+        "player_id"
+    )
+
+    operator_id = user.get(
+        "operator_id"
+    )
+
+    if not player_id:
+
+        return response.error_message(
+            "Player ID is not configured.",
+            status_code=400,
+        )
+
+    if not operator_id:
+
+        return response.error_message(
+            "Operator ID is not configured.",
+            status_code=400,
+        )
+
+    # =====================================================
+    # BLACKLIST OLD TOKEN
+    # TOKEN ROTATION
+    # =====================================================
 
     await token_collection.update_one(
-        {"refresh_token": request.refresh_token},
-        {"$set": {"is_blacklisted": True}}
+        {
+            "_id": existing_token["_id"]
+        },
+        {
+            "$set": {
+                "is_blacklisted": True,
+                "updated_at": datetime.utcnow(),
+            }
+        },
     )
-    user = await user_collection.find_one({"email": token_data["sub"]})
-    if not user:
-        return response.raise_exception(
-            message="USER_NOT_FOUND",
-            data={},
-            status_code=404
-        )
 
-    new_access_token, new_refresh_token = generate_login_tokens(user)
+    # =====================================================
+    # GENERATE NEW TOKENS
+    # =====================================================
+
+    new_access_token, new_refresh_token = (
+        generate_login_tokens(
+            user=user,
+            player_id=player_id,
+            operator_id=operator_id,
+        )
+    )
+
+    # =====================================================
+    # STORE NEW REFRESH TOKEN
+    # =====================================================
+
+    await token_collection.insert_one(
+        {
+            "user_id": str(
+                user["_id"]
+            ),
+
+            "email": user[
+                "email"
+            ],
+
+            "access_token": (
+                new_access_token
+            ),
+
+            "refresh_token": (
+                new_refresh_token
+            ),
+
+            "is_blacklisted": False,
+
+            "created_at": (
+                datetime.utcnow()
+            ),
+
+            "updated_at": None,
+        }
+    )
 
     return response.success_message(
         "TOKEN_REFRESHED_SUCCESSFULLY",
-        data=[{
-            "access_token": new_access_token,
-            "refresh_token": new_refresh_token
-        }]
+
+        data=[
+            {
+                "access_token": (
+                    new_access_token
+                ),
+
+                "refresh_token": (
+                    new_refresh_token
+                ),
+            }
+        ],
+
+        status_code=200,
     )
 
-#controller for logout
-async def logout(request: LogoutRequest, lang: str = "en"):
+async def logout(
+    request: LogoutRequest,
+    lang: str = "en",
+):
     """
-    Logout a user by blacklisting their refresh token.
+    Logout a user by blacklisting
+    all active refresh tokens.
     """
+
     try:
-        # Verify the token
-        token_data = verify_token(request.refresh_token)
-    except Exception as e:
-        raise response.raise_exception(message=translate_message("INVALID_REFRESH_TOKEN", lang), data={}, status_code=400)
 
-    # Find the token in the database
-    existing_token = await token_collection.find_one({"refresh_token": request.refresh_token})
-
-    if not existing_token:
-        raise response.raise_exception(message=translate_message("REFRESH_TOKEN_NOT_FOUND", lang), data={}, status_code=400)
-
-    user_id = existing_token.get("user_id")
-    if not user_id:
-        raise response.raise_exception(
-            message=translate_message("USER_ID_NOT_FOUND", lang),
-            data={},
-            status_code=400
+        token_data = verify_refresh_token(
+            request.refresh_token
         )
 
-    # Blacklist the token
-    await token_collection.update_many(
-        {"user_id": user_id, "is_blacklisted": False},
-        {"$set": {"is_blacklisted": True, "updated_at": datetime.utcnow()}}
+    except Exception:
+
+        return response.error_message(
+            translate_message(
+                "INVALID_REFRESH_TOKEN",
+                lang=lang,
+            ),
+            status_code=400,
+        )
+
+    existing_token = (
+        await token_collection.find_one(
+            {
+                "refresh_token": (
+                    request.refresh_token
+                )
+            }
+        )
     )
 
-    # Update user login status
-    await user_collection.update_one(
-        {"_id": ObjectId(user_id)},
+    if not existing_token:
+
+        return response.error_message(
+            translate_message(
+                "REFRESH_TOKEN_NOT_FOUND",
+                lang=lang,
+            ),
+            status_code=400,
+        )
+
+    if existing_token.get(
+        "is_blacklisted",
+        False,
+    ):
+
+        return response.error_message(
+            "REFRESH_TOKEN_ALREADY_INVALID",
+            status_code=401,
+        )
+
+    user_id = existing_token.get(
+        "user_id"
+    )
+
+    if not user_id:
+
+        return response.error_message(
+            translate_message(
+                "USER_ID_NOT_FOUND",
+                lang=lang,
+            ),
+            status_code=400,
+        )
+
+    # =====================================================
+    # BLACKLIST ACTIVE TOKENS
+    # =====================================================
+
+    await token_collection.update_many(
+        {
+            "user_id": user_id,
+            "is_blacklisted": False,
+        },
         {
             "$set": {
-                "login_status": LoginStatus.INACTIVE,
-                "last_logout_at": datetime.utcnow()
-            }
-        }
-    )
-    return response.success_message(translate_message("LOGOUT_SUCCESSFUL", lang), data={})
+                "is_blacklisted": True,
 
+                "updated_at": (
+                    datetime.utcnow()
+                ),
+            }
+        },
+    )
+
+    # =====================================================
+    # UPDATE LOGIN STATUS
+    # =====================================================
+
+    await user_collection.update_one(
+        {
+            "_id": ObjectId(
+                user_id
+            )
+        },
+        {
+            "$set": {
+                "login_status": (
+                    LoginStatus.INACTIVE
+                ),
+
+                "last_logout_at": (
+                    datetime.utcnow()
+                ),
+            }
+        },
+    )
+
+    return response.success_message(
+        translate_message(
+            "LOGOUT_SUCCESSFUL",
+            lang=lang,
+        ),
+
+        data={},
+
+        status_code=200,
+    )
 
 # helper function -Dependency to extract user email from token
 def get_current_user_email(request: Request):
@@ -175,292 +405,6 @@ async def get_user_profile_details(request: Request, current_user: dict, lang: s
             data=str(e),
             status_code=500
         )
-
-
-
-async def signup_controller(payload: Signup, lang):
-
-    deleted_account = await deleted_account_collection.find_one({
-        "email": payload.email
-    })
-
-    if deleted_account:
-        return response.error_message(
-            translate_message("EMAIL_CANNOT_BE_REUSED", lang=lang),
-            status_code=400
-        )
-    # Step 1: Check if email already exists in DB
-    existing = await user_collection.find_one({"email": payload.email})
-    if existing:
-        return response.error_message(translate_message("EMAIL_ALREADY_REGISTERED", lang=lang), status_code=400)
-
-    existing_username = await user_collection.find_one({"username": payload.username})
-    if existing_username:
-        return response.error_message(
-            translate_message("USERNAME_ALREADY_TAKEN", lang=lang),
-            status_code=400
-        )
-    
-    # Step 2: Generate OTP
-    otp = generate_verification_code()
-    # Step 3: Save signup data temporarily in Redis
-    signup_data = {
-        "username": payload.username,
-        "email": payload.email,
-        "password": get_hashed_password(payload.password)
-    }
-
-    await redis_client.setex(
-        f"signup:{payload.email}:data",
-        600,
-        json.dumps(signup_data)
-    )
-
-    # Store OTP for 5 minutes
-    await redis_client.setex(
-        f"signup:{payload.email}:otp",
-        60,
-        otp
-    )
-
-    # Step 4: Send verification email
-    subject, body = signup_verification_template(payload.username, otp, lang)
-    is_html = True
-    await send_email(payload.email, subject, body, is_html)
-
-    return response.success_message(translate_message("OTP_SENT_SUCCESSFULLY", lang=lang), 
-                                    data=[], status_code=200)
-
-async def verify_signup_otp_controller(payload, lang):
-    email = payload.email
-    otp = payload.otp
-
-    # Step 1: Get stored OTP
-    stored_otp = await redis_client.get(f"signup:{email}:otp")
-    if not stored_otp:
-        return response.error_message(translate_message("OTP_EXPIRED_OR_NOT_FOUND", lang=lang), status_code=400)
-
-    stored_otp = stored_otp.encode() if isinstance(stored_otp, bytes) else stored_otp
-
-    # Step 2: Compare OTP
-    if otp != stored_otp:
-        return response.error_message(translate_message("INVALID_OTP", lang=lang), status_code=400)
-
-    # Step 3: Get stored signup data
-    temp_data = await redis_client.get(f"signup:{email}:data")
-    if not temp_data:
-        return response.error_message(translate_message("SIGNUP_SESSION_EXPIRED", lang=lang), status_code=400)
-
-    temp_data = json.loads(temp_data.encode())
-
-    # Step 4: Save verified user into MongoDB
-    try:
-        result = await user_collection.insert_one({
-            "username": temp_data["username"],
-            "email": temp_data["email"],
-            "password": temp_data["password"],
-            "membership_type": "free",
-            "is_verified": False,
-            "created_at": datetime.utcnow(),
-            "updated_at": None,
-            "two_factor_enabled": True,
-            "language": lang or "en",
-            "bonus_tokens":0,
-            "tokens":0
-        })
-
-        user_id = str(result.inserted_id)
-
-    except Exception as e:
-        return response.error_message(translate_message("FAILED_TO_CREATE_USER",lang=lang), data = [{str(e)}], status_code=500)
-
-    # Step 5: Cleanup Redis keys
-    await redis_client.delete(f"signup:{email}:otp")
-    await redis_client.delete(f"signup:{email}:data")
-
-    # user = await user_collection.find_one({"email": email})
-    user = await user_collection.find_one({"_id": ObjectId(user_id)})
-
-    access_token, refresh_token = generate_login_tokens(user)
-
-    # Success Response
-    return response.success_message(
-        translate_message("EMAIL_VERIFIED_SUCCESSFULLY", lang=lang),
-        data=[{
-            "user_id": user_id,
-            "access_token": access_token,
-            "refresh_token": refresh_token            
-            }], status_code=200
-    )
-
-async def resend_otp_controller(payload, lang):
-    email = payload.email
-
-    # Step 1: Check if signup session still exists
-    temp_data = await redis_client.get(f"signup:{email}:data")
-    if not temp_data:
-        return response.error_message(translate_message("SIGNUP_SESSION_EXPIRED_START_AGAIN", lang=lang), status_code=400)
-
-    # Step 2: Generate new OTP
-    otp = generate_verification_code()
-
-    await redis_client.setex(
-        f"signup:{email}:otp",
-        300,  # 5 minutes
-        otp
-    )
-
-    # Step 3: Send email again
-    subject, body = signup_verification_template(
-        json.loads(temp_data)["username"],
-        otp, lang
-    )
-
-    await send_email(email, subject, body, is_html=True)
-
-    return response.success_message(translate_message("NEW_OTP_SENT_TO_EMAIL", lang=lang),
-                                    data= [], status_code=200)
-
-async def login_controller(payload: LoginRequest, lang):
-    email = payload.email
-    password = payload.password
-
-    user = await get_user_details(
-        condition={"email": email},
-        fields=[
-            "_id",
-            "email",
-            "username",
-            "password",
-            "two_factor_enabled",
-            "membership_type",
-            "is_verified",
-            "is_deleted"
-        ]
-    )
-
-    if not user:
-        return response.error_message(
-            translate_message("USER_NOT_REGISTERED", lang=lang),
-            status_code=400
-        )
-    
-    if user.get("is_deleted"):
-        return response.error_message(
-            translate_message("ACCOUNT_NOT_FOUND", lang=lang),
-            status_code=400
-        )
-      
-    # Check user accout is deleted or not
-    deleted_account = await deleted_account_collection.find_one({
-        "email": payload.email
-    })
-
-    if deleted_account:
-        return response.error_message(
-            translate_message("EMAIL_CANNOT_BE_REUSED", lang=lang),
-            status_code=400
-        )
-    
-    # check user is blocked or not
-    blocked = await admin_blocked_users_collection.find_one({
-        "user_id": str(user["_id"]),
-    })
-
-    if blocked:
-        return response.error_message(
-        translate_message("ACCOUNT_BLOCKED", lang),
-        data=[],
-        status_code=403
-    )
-
-    # check if user account is suspended
-    now = datetime.utcnow()
-
-    suspension = await user_suspension_collection.find_one(
-        {
-            "user_id": str(user["_id"]),
-            "suspended_until": {"$exists": True}
-        }
-    )
-
-    if suspension:
-        suspended_until = suspension.get("suspended_until")
-
-        if suspended_until and now <= suspended_until:
-            remaining_seconds = (suspended_until - now).total_seconds()
-            remaining_days = max(1, math.ceil(remaining_seconds / 86400))
-
-            return response.error_message(
-                translate_message("ACCOUNT_SUSPENDED", lang=lang),
-                data=[{
-                    "suspended_until": suspended_until.isoformat(),
-                    "remaining_days": remaining_days
-                }],
-                status_code=403
-            )
-
-    if not verify_password(password, user["password"]):
-        return response.error_message(translate_message("INVALID_EMAIL_OR_PASSWORD", lang=lang), status_code=400)
-
-    # Step 3: If 2FA disabled → return tokens immediately
-    if not user.get("two_factor_enabled", True):
-        return await finalize_login_response(user, lang)
-
-    # 2FA enabled → send OTP
-    otp = generate_verification_code()
-
-    await redis_client.setex(f"login:{email}:otp", 60, otp)
-
-    subject, body = login_verification_template(user["username"], otp, lang)
-    await send_email(email, subject, body, is_html=True)
-
-    return response.success_message(
-        translate_message("LOGIN_OTP_SENT", lang=lang),
-        data=[],
-        status_code=200    
-    )
-
-async def verify_login_otp_controller(payload, lang):
-    email = payload.email
-    otp = payload.otp
-
-    stored_otp = await redis_client.get(f"login:{email}:otp")
-    if not stored_otp:
-        return response.error_message(translate_message("LOGIN_OTP_EXPIRED_OR_INVALID", lang=lang), status_code=400)
-
-    stored_otp = stored_otp.decode() if isinstance(stored_otp, bytes) else stored_otp
-
-    if otp != stored_otp:
-        return response.error_message(translate_message("INCORRECT_OTP", lang=lang), status_code=400)
-
-    user = await user_collection.find_one({"email": email})
-
-    await redis_client.delete(f"login:{email}:otp")
-
-    return await finalize_login_response(user, lang)
-
-async def resend_login_otp_controller(payload, lang):
-    email = payload.email
-
-    # Check user exists
-    user = await user_collection.find_one({"email": email})
-    if not user:
-        return response.error_message(translate_message("USER_NOT_FOUND", lang=lang), status_code=404)
-
-    # Generate new OTP
-    otp = generate_verification_code()
-
-    await redis_client.setex(f"login:{email}:otp", 300, otp)
-
-    subject, body = login_verification_template(user["username"], otp, lang)
-    await send_email(email, subject, body, is_html=True)
-
-    return response.success_message(
-        translate_message("NEW_OTP_SENT_TO_EMAIL", lang=lang),
-        data=[],
-        status_code=200)
-
 async def send_reset_password_otp_controller(payload: ForgotPasswordRequest, lang):
     email = payload.email
 
@@ -642,4 +586,167 @@ async def get_all_users_controller(
             "total": total
         }],
         status_code=200
+    )
+
+async def signup_controller(
+    payload: Signup,
+    lang: str,
+):
+    existing = await user_collection.find_one(
+        {
+            "email": payload.email,
+        }
+    )
+
+    if existing:
+        return response.error_message(
+            translate_message(
+                "EMAIL_ALREADY_REGISTERED",
+                lang=lang,
+            ),
+            status_code=400,
+        )
+
+    existing_username = (
+        await user_collection.find_one(
+            {
+                "username": payload.username,
+            }
+        )
+    )
+
+    if existing_username:
+        return response.error_message(
+            translate_message(
+                "USERNAME_ALREADY_TAKEN",
+                lang=lang,
+            ),
+            status_code=400,
+        )
+
+    # Temporary default operator
+    operator_id = (
+        "6a95200b5c314c48d5f42cf1"
+    )
+
+    player_id = str(
+        ObjectId()
+    )
+
+    user_data = {
+        "username": payload.username,
+        "email": payload.email,
+        "password": get_hashed_password(
+            payload.password
+        ),
+
+        "membership_type": "free",
+        "is_verified": True,
+        "two_factor_enabled": False,
+
+        "language": lang,
+        "bonus_tokens": 0,
+        "tokens": 0,
+
+        "player_id": player_id,
+        "operator_id": operator_id,
+
+        "role": "user",
+
+        "login_status": "inactive",
+        "is_deleted": False,
+
+        "created_at": datetime.utcnow(),
+        "updated_at": None,
+    }
+
+    result = await user_collection.insert_one(
+        user_data
+    )
+
+    return response.success_message(
+        "User registered successfully.",
+        data=[
+            {
+                "user_id": str(
+                    result.inserted_id
+                ),
+                "username": payload.username,
+                "email": payload.email,
+                "player_id": player_id,
+                "operator_id": operator_id,
+            }
+        ],
+        status_code=201,
+    )
+
+async def login_controller(
+    payload: LoginRequest,
+    lang: str,
+):
+
+    email = payload.email
+
+    password = payload.password
+
+    # =====================================================
+    # GET USER
+    # =====================================================
+
+    user = await get_user_details(
+        condition={
+            "email": email,
+        },
+        fields=[
+            "_id",
+            "email",
+            "username",
+            "password",
+            "two_factor_enabled",
+            "membership_type",
+            "is_verified",
+            "is_deleted",
+            "player_id",
+            "operator_id",
+            "role",
+        ],
+    )
+
+    if not user:
+        return response.error_message(
+            translate_message(
+                "USER_NOT_REGISTERED",
+                lang=lang,
+            ),
+            status_code=400,
+        )
+
+    player_id = user.get(
+        "player_id"
+    )
+
+    operator_id = user.get(
+        "operator_id"
+    )
+
+    if not player_id:
+        return response.error_message(
+            "Player ID is not configured for this user.",
+            status_code=400,
+        )
+
+    if not operator_id:
+        return response.error_message(
+            "Operator ID is not configured for this user.",
+            status_code=400,
+        )
+    # =====================================================
+    # GENERATE TOKENS
+    # =====================================================
+
+    return await finalize_login_response(
+        user=user,
+        player_id=player_id,
+        operator_id=operator_id,
+        lang=lang,
     )
