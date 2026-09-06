@@ -18,6 +18,7 @@ import {
 import PlayingCard from "./PlayingCard";
 import BetControls from "./BetControls";
 import RoundHistory from "./RoundHistory";
+import LogoutButton from "@/components/auth/LogoutButton";
 
 const INITIAL_BALANCE = 10;
 const MIN_BET = 1;
@@ -187,11 +188,15 @@ try {
             </p>
           </div>
 
-          <div className="balance-card">
-            <span>YOUR BALANCE</span>
-            <strong>
-              ${balance.toFixed(2)}
-            </strong>
+          <div className="flex items-center gap-3">
+            <div className="balance-card">
+              <span>YOUR BALANCE</span>
+              <strong>
+                ${balance.toFixed(2)}
+              </strong>
+            </div>
+
+            <LogoutButton />
           </div>
         </header>
 

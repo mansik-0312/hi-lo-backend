@@ -262,28 +262,233 @@ async def create_user(user: UserCreate, lang: str = "en", request: Request = Non
 
 
 #controller for refresh_token
-async def refresh_token(request: RefreshTokenRequest, lang: str = "en"):
+async def refresh_token(
+    request: RefreshTokenRequest,
+    lang: str = "en",
+):
     """
-    Refresh the access token using a valid refresh token.
+    Generate a new access and refresh token
+    using a valid refresh token.
     """
-    # Check if the token exists in the collection
-    result  = await token_collection.find_one({"refresh_token": request.refresh_token})
-    existing_token = await result if isinstance(result, asyncio.Future) else result
-    if not existing_token:
-        raise response.raise_exception(message=translate_message("Refresh token not found.", lang), data={}, status_code=400)
 
-    # Check if the token is blacklisted
-    if existing_token.get("is_blacklisted", True):
+    # ==========================================
+    # FIND TOKEN
+    # ==========================================
+
+    existing_token = (
+        await token_collection.find_one(
+            {
+                "refresh_token": (
+                    request.refresh_token
+                )
+            }
+        )
+    )
+
+    if not existing_token:
         raise response.raise_exception(
-            message=translate_message("The refresh token is blacklisted.", lang), data={}, status_code=401
+            message=translate_message(
+                "REFRESH_TOKEN_NOT_FOUND",
+                lang,
+            ),
+            data={},
+            status_code=400,
         )
 
-    # Verify token and generate new access token
-    token_data = verify_refresh_token(request.refresh_token)
-    new_access_token = create_access_token(data={"sub": token_data['sub'], "user_id": token_data['user_id']})
+    # ==========================================
+    # CHECK BLACKLIST
+    # ==========================================
 
-    return response.success_message(translate_message("Successful", lang),data={"access_token": new_access_token, "token_type": "bearer"})
+    if existing_token.get(
+        "is_blacklisted",
+        False,
+    ):
+        raise response.raise_exception(
+            message=translate_message(
+                "REFRESH_TOKEN_BLACKLISTED",
+                lang,
+            ),
+            data={},
+            status_code=401,
+        )
 
+    # ==========================================
+    # VERIFY REFRESH TOKEN
+    # ==========================================
+
+    try:
+
+        token_data = (
+            verify_refresh_token(
+                request.refresh_token
+            )
+        )
+
+    except Exception:
+
+        raise response.raise_exception(
+            message=translate_message(
+                "INVALID_REFRESH_TOKEN",
+                lang,
+            ),
+            data={},
+            status_code=401,
+        )
+
+    # ==========================================
+    # VERIFY TOKEN TYPE
+    # ==========================================
+
+    if token_data.get(
+        "token_type"
+    ) != "refresh":
+
+        raise response.raise_exception(
+            message="INVALID_REFRESH_TOKEN",
+            data={},
+            status_code=401,
+        )
+
+    # ==========================================
+    # GET USER
+    # ==========================================
+
+    user_id = token_data.get(
+        "user_id"
+    )
+
+    if not user_id:
+
+        raise response.raise_exception(
+            message="USER_ID_NOT_FOUND",
+            data={},
+            status_code=400,
+        )
+
+    try:
+
+        user = await user_collection.find_one(
+            {
+                "_id": ObjectId(
+                    user_id
+                )
+            }
+        )
+
+    except Exception:
+
+        user = None
+
+    if not user:
+
+        raise response.raise_exception(
+            message="USER_NOT_FOUND",
+            data={},
+            status_code=404,
+        )
+
+    # ==========================================
+    # VALIDATE PLAYER / OPERATOR
+    # ==========================================
+
+    player_id = user.get(
+        "player_id"
+    )
+
+    operator_id = user.get(
+        "operator_id"
+    )
+
+    if not player_id:
+
+        raise response.raise_exception(
+            message=(
+                "PLAYER_ID_NOT_CONFIGURED"
+            ),
+            data={},
+            status_code=400,
+        )
+
+    if not operator_id:
+
+        raise response.raise_exception(
+            message=(
+                "OPERATOR_ID_NOT_CONFIGURED"
+            ),
+            data={},
+            status_code=400,
+        )
+
+    # ==========================================
+    # BLACKLIST OLD REFRESH TOKEN
+    # ==========================================
+
+    await token_collection.update_one(
+        {
+            "_id": existing_token["_id"],
+        },
+        {
+            "$set": {
+                "is_blacklisted": True,
+
+                "updated_at": (
+                    datetime.utcnow()
+                ),
+            }
+        },
+    )
+
+    # ==========================================
+    # GENERATE NEW TOKENS
+    # ==========================================
+
+    new_access_token, new_refresh_token = (
+        generate_login_tokens(
+            user=user,
+            player_id=player_id,
+            operator_id=operator_id,
+        )
+    )
+
+    # ==========================================
+    # STORE NEW REFRESH TOKEN
+    # ==========================================
+
+    await token_collection.insert_one(
+        {
+            "user_id": str(
+                user["_id"]
+            ),
+
+            "refresh_token": (
+                new_refresh_token
+            ),
+
+            "is_blacklisted": False,
+
+            "created_at": (
+                datetime.utcnow()
+            ),
+
+            "updated_at": None,
+        }
+    )
+
+    return response.success_message(
+        "TOKEN_REFRESHED_SUCCESSFULLY",
+        data=[
+            {
+                "access_token": (
+                    new_access_token
+                ),
+
+                "refresh_token": (
+                    new_refresh_token
+                ),
+            }
+        ],
+        status_code=200,
+    )    
 
 #controller for logout
 async def logout(request: LogoutRequest, lang: str = "en"):

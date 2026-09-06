@@ -125,3 +125,37 @@ async def get_all_users(
     """
     return await get_all_users_controller(pagination, lang)
 
+@router.post(
+    "/register-signup",
+    response_model=Response,
+)
+async def signup_user(
+    payload: Signup,
+    lang: str = "en",
+):
+    """
+    Register a new user.
+    """
+
+    return await signup_controller(
+        payload,
+        lang,
+    )
+
+
+@router.post(
+    "/login",
+    response_model=Response,
+)
+async def login_user(
+    payload: LoginRequest,
+    lang: str = "en",
+):
+    """
+    Authenticate user and return JWT tokens.
+    """
+
+    return await login_controller(
+        payload,
+        lang,
+    )
